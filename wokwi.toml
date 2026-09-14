@@ -2,3 +2,9 @@
 version = 1
 elf = ".pio/build/adafruit_feather_esp32_v2/firmware.elf"
 firmware = ".pio/build/adafruit_feather_esp32_v2/firmware.bin"
+
+lib_deps =
+    knolleary/PubSubClient
+    adafruit/DHT sensor library
+    adafruit/Adafruit Unified Sensor
+    bblanchon/ArduinoJson
