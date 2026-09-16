@@ -12,8 +12,8 @@
 const char* ssid = "Wokwi-GUEST";
 const char* password = "";
 const char* mqtt_server = "broker.hivemq.com";
-const char* topic_pub = "IF_IoT/datasensor";
-const char* topic_sub = "IF_IoT/led";
+const char* topic_pub = "kelompok01_IF_IoT/datasensor";
+const char* topic_sub = "kelompok01_IF_IoT/led";
 
 WiFiClient espClient;
 PubSubClient client(espClient);

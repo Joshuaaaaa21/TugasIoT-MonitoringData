@@ -8,8 +8,8 @@ import pandas as pd
 import datetime
 import json
 
-MQTT_SENSOR_TOPIC = "IF_IoT/datasensor"
-MQTT_LED_TOPIC = "IF_IoT/led"
+MQTT_SENSOR_TOPIC = "kelompok01_IF_IoT/datasensor"
+MQTT_LED_TOPIC = "kelompok01_IF_IoT/led"
 
 #--- Data Storage
 time_data = []
