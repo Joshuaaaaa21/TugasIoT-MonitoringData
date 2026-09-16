@@ -1,135 +1,194 @@
-import tkinter as tk
-from tkinter import filedialog
-import paho.mqtt.client as mqtt
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from matplotlib.animation import FuncAnimation
-import pandas as pd
-import datetime
-import json
+"""
+Dashboard monitoring suhu + cahaya + kontrol LED (versi web).
 
+Logika MQTT-nya sama persis dengan versi Tkinter, hanya tampilannya
+dipindah ke browser. Jalankan file ini, lalu buka http://127.0.0.1:5000
+
+Kebutuhan:
+    pip install flask paho-mqtt pandas openpyxl
+"""
+
+import datetime
+import io
+import json
+import threading
+
+import pandas as pd
+import paho.mqtt.client as mqtt
+from flask import Flask, jsonify, render_template, request, send_file
+
+# --- Konfigurasi MQTT
+MQTT_BROKER = "broker.hivemq.com"
+MQTT_PORT = 1883
 MQTT_SENSOR_TOPIC = "kelompok01_IF_IoT/datasensor"
 MQTT_LED_TOPIC = "kelompok01_IF_IoT/led"
 
-#--- Data Storage
+# --- Penyimpanan data (dipakai bersama thread MQTT dan thread web)
+lock = threading.Lock()
 time_data = []
 temp_data = []
 light_data = []
-collecting = False
 
-#--- MQTT Setup
+collecting = False
+led_state = "0"
+mqtt_connected = False
+session_id = 1  # naik tiap reset, supaya browser tahu harus menggambar ulang
+
+
+# --- MQTT
 def on_connect(client, userdata, flags, reason_code, properties=None):
+    global mqtt_connected
     if reason_code.is_failure:
+        mqtt_connected = False
         print(f"MQTT gagal terhubung: {reason_code}")
         return
+    mqtt_connected = True
     result = client.subscribe(MQTT_SENSOR_TOPIC)
     if result[0] != mqtt.MQTT_ERR_SUCCESS:
         print(f"Gagal subscribe sensor: {mqtt.error_string(result[0])}")
+    else:
+        print(f"Terhubung ke broker, subscribe {MQTT_SENSOR_TOPIC}")
+
+
+def on_disconnect(client, userdata, flags, reason_code, properties=None):
+    global mqtt_connected
+    mqtt_connected = False
+    print(f"MQTT terputus: {reason_code}")
+
 
 def on_message(client, userdata, msg):
-    if msg.topic == MQTT_SENSOR_TOPIC and collecting:
-        try:
-            payload = json.loads(msg.payload.decode())
+    if msg.topic != MQTT_SENSOR_TOPIC or not collecting:
+        return
+    try:
+        payload = json.loads(msg.payload.decode())
+        with lock:
             time_data.append(float(payload["time"]))
             temp_data.append(float(payload["temp"]))
             light_data.append(int(payload["light"]))
-        except Exception as e:
-            print("X Error:", e)
+    except Exception as e:
+        print("X Error:", e)
+
 
 client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 client.on_connect = on_connect
+client.on_disconnect = on_disconnect
 client.on_message = on_message
-client.connect("broker.hivemq.com", 1883, 60)
+client.connect_async(MQTT_BROKER, MQTT_PORT, 60)
 client.loop_start()
 
-#--- GUI Setup
-root = tk.Tk()
-root.title("Monitoring Suhu + Cahaya + Kontrol LED")
-root.geometry("1100x780")
 
-frame = tk.Frame(root)
-frame.pack(pady=10)
+# --- Web
+app = Flask(__name__)
 
-btn_font = ("Arial", 12)
-tk.Button(frame, text="Start", font=btn_font, width=12, command=lambda: set_collecting(True)).grid(row=0, column=0, padx=5)
-tk.Button(frame, text="Stop", font=btn_font, width=12, command=lambda: set_collecting(False)).grid(row=0, column=1, padx=5)
-tk.Button(frame, text="Reset", font=btn_font, width=12, command=lambda: reset_data()).grid(row=0, column=2, padx=5)
-tk.Button(frame, text="Simpan Excel", font=btn_font, width=12, command=lambda: save_excel()).grid(row=0, column=3, padx=5)
-tk.Button(frame, text="Close", font=btn_font, width=12, command=lambda: close_app()).grid(row=0, column=4, padx=5)
 
-led_frame = tk.LabelFrame(root, text="Kontrol LED", font=btn_font, padx=20, pady=10)
-led_frame.pack(pady=10)
+@app.get("/")
+def index():
+    return render_template("index.html")
 
-tk.Button(led_frame, text="LED ON", font=btn_font, width=15, bg="green", fg="white", command=lambda: control_led("1")).pack(side=tk.LEFT, padx=20)
-tk.Button(led_frame, text="LED OFF", font=btn_font, width=15, bg="red", fg="white", command=lambda: control_led("0")).pack(side=tk.LEFT, padx=20)
 
-#--- Grafik Matplotlib
-fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 6))
-fig.subplots_adjust(hspace=0.8)
-canvas = FigureCanvasTkAgg(fig, master=root)
-canvas.get_tk_widget().pack(pady=10, fill="both", expand=True)
+@app.get("/api/data")
+def api_data():
+    """Kirim hanya data baru sejak indeks `since` supaya ringan."""
+    try:
+        since = max(0, int(request.args.get("since", 0)))
+    except ValueError:
+        since = 0
 
-def update_plot(frame):
-    ax1.clear()
-    ax2.clear()
-    if time_data:
-        ax1.plot(time_data, temp_data, color='blue', marker='o')
-        ax1.set_title("Suhu terhadap Waktu")
-        ax1.set_ylabel("Suhu (°C)")
-        ax1.grid(True)
-        
-        ax2.plot(time_data, light_data, color='orange', marker='x')
-        ax2.set_title("Cahaya terhadap Waktu")
-        ax2.set_ylabel("ADC Cahaya")
-        ax2.set_xlabel("Waktu (detik)")
-        ax2.grid(True)
-    canvas.draw()
+    with lock:
+        total = len(time_data)
+        if since > total:  # browser ketinggalan / data sudah direset
+            since = 0
+        chunk = {
+            "start": since,
+            "time": time_data[since:],
+            "temp": temp_data[since:],
+            "light": light_data[since:],
+            "total": total,
+            "latest": {
+                "time": time_data[-1] if total else None,
+                "temp": temp_data[-1] if total else None,
+                "light": light_data[-1] if total else None,
+            },
+        }
 
-ani = FuncAnimation(fig, update_plot, interval=1000, cache_frame_data=False)
+    chunk.update(
+        {
+            "session": session_id,
+            "collecting": collecting,
+            "connected": client.is_connected() and mqtt_connected,
+            "led": led_state,
+        }
+    )
+    return jsonify(chunk)
 
-#--- Control Functions
-def set_collecting(state):
+
+@app.post("/api/collect")
+def api_collect():
+    """Mulai / berhenti merekam data."""
     global collecting
-    collecting = state
+    collecting = bool(request.json.get("active"))
+    return jsonify({"collecting": collecting})
 
-def reset_data():
-    time_data.clear()
-    temp_data.clear()
-    light_data.clear()
 
-def save_excel():
-    filename = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel Files", "*.xlsx")])
-    if filename:
-        waktu_format = [str(datetime.timedelta(seconds=int(t))) for t in time_data]
-        df = pd.DataFrame({
-            "Time (HH:MM:SS)": waktu_format,
-            "Temperature (C)": temp_data,
-            "Light (ADC)": light_data
-        })
-        df.to_excel(filename, index=False, engine='openpyxl')
+@app.post("/api/reset")
+def api_reset():
+    global session_id
+    with lock:
+        time_data.clear()
+        temp_data.clear()
+        light_data.clear()
+        session_id += 1
+    return jsonify({"session": session_id})
 
-def control_led(value):
+
+@app.post("/api/led")
+def api_led():
+    global led_state
+    value = "1" if str(request.json.get("value")) == "1" else "0"
+
     if not client.is_connected():
-        print("MQTT belum terhubung; perintah LED tidak dikirim")
-        return
+        return jsonify({"ok": False, "message": "MQTT belum terhubung"}), 503
+
     result = client.publish(MQTT_LED_TOPIC, value, qos=1)
     if result.rc != mqtt.MQTT_ERR_SUCCESS:
-        print(f"Gagal mengirim perintah LED: {mqtt.error_string(result.rc)}")
-    else:
-        result.wait_for_publish(timeout=2)
-        print(f"Perintah LED ({'ON' if value == '1' else 'OFF'}) terkirim")
+        return jsonify({"ok": False, "message": mqtt.error_string(result.rc)}), 502
 
-def close_app():
-    ani.event_source.stop()
-    if canvas._idle_draw_id:
-        canvas._tkcanvas.after_cancel(canvas._idle_draw_id)
-        canvas._idle_draw_id = None
-    client.loop_stop()
-    client.disconnect()
-    plt.close(fig)
-    root.quit()
-    root.destroy()
+    result.wait_for_publish(timeout=2)
+    led_state = value
+    label = "menyala" if value == "1" else "mati"
+    print(f"Perintah LED ({label}) terkirim")
+    return jsonify({"ok": True, "led": led_state, "message": f"LED {label}"})
 
-#--- Start GUI
-root.protocol("WM_DELETE_WINDOW", close_app)
-root.mainloop()
+
+@app.get("/api/export")
+def api_export():
+    """Unduh data sebagai file Excel, sama seperti tombol Simpan Excel."""
+    with lock:
+        waktu_format = [str(datetime.timedelta(seconds=int(t))) for t in time_data]
+        df = pd.DataFrame(
+            {
+                "Time (HH:MM:SS)": waktu_format,
+                "Temperature (C)": list(temp_data),
+                "Light (ADC)": list(light_data),
+            }
+        )
+
+    buffer = io.BytesIO()
+    df.to_excel(buffer, index=False, engine="openpyxl")
+    buffer.seek(0)
+
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    return send_file(
+        buffer,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=f"data_sensor_{stamp}.xlsx",
+    )
+
+
+if __name__ == "__main__":
+    try:
+        app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+    finally:
+        client.loop_stop()
+        client.disconnect()
