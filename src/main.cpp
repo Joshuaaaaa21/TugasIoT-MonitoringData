@@ -19,6 +19,9 @@ WiFiClient espClient;
 PubSubClient client(espClient);
 DHT dht(DHTPIN, DHTTYPE);
 
+unsigned long lastPublish = 0;
+const unsigned long publishInterval = 2000;
+
 void setup_wifi() {
   Serial.print("Connecting to WiFi");
   WiFi.begin(ssid, password);
@@ -30,11 +33,21 @@ void setup_wifi() {
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
+  Serial.print("Pesan masuk [");
+  Serial.print(topic);
+  Serial.print("]: ");
+  for (unsigned int i = 0; i < length; i++) {
+    Serial.print((char)payload[i]);
+  }
+  Serial.println();
+
   if (strcmp(topic, topic_sub) == 0 && length > 0) {
     if ((char)payload[0] == '1') {
       digitalWrite(LEDPIN, HIGH);
+      Serial.println("LED -> ON");
     } else {
       digitalWrite(LEDPIN, LOW);
+      Serial.println("LED -> OFF");
     }
   }
 }
@@ -42,9 +55,11 @@ void callback(char* topic, byte* payload, unsigned int length) {
 void reconnect() {
   while (!client.connected()) {
     Serial.print("Connecting to MQTT...");
-    if (client.connect("esp32-client-monitor")) {
+    // ID unik per device supaya tidak bentrok kalau dipakai bareng satu angkatan
+    String clientId = "esp32-kelompok01-" + String((uint32_t)ESP.getEfuseMac(), HEX);
+    if (client.connect(clientId.c_str())) {
       client.subscribe(topic_sub);
-      Serial.println(" connected");
+      Serial.println(" connected as " + clientId);
     } else {
       Serial.print(" failed, state=");
       Serial.println(client.state());
@@ -58,7 +73,7 @@ void setup() {
   pinMode(LEDPIN, OUTPUT);
   pinMode(LIGHTPIN, INPUT);
   dht.begin();
-  
+
   setup_wifi();
   client.setServer(mqtt_server, 1883);
   client.setCallback(callback);
@@ -68,31 +83,34 @@ void loop() {
   if (!client.connected()) {
     reconnect();
   }
-  client.loop();
+  client.loop(); // dipanggil tiap iterasi, tidak lagi ketahan delay()
 
-  float temp = dht.readTemperature();
-  
-  if (!isnan(temp)) {
-    JsonDocument doc;
-    doc["time"] = millis() / 1000;
-    doc["temp"] = temp;
-    
-    int light = analogRead(LIGHTPIN);
-    doc["light"] = light;
+  unsigned long now = millis();
+  if (now - lastPublish >= publishInterval) {
+    lastPublish = now;
 
-    char buffer[128];
-    serializeJson(doc, buffer);
-    bool published = client.publish(topic_pub, buffer);
+    float temp = dht.readTemperature();
 
-    Serial.print("Publish ");
-    Serial.print(published ? "OK " : "FAILED ");
-    Serial.print("topic=");
-    Serial.print(topic_pub);
-    Serial.print(" payload=");
-    Serial.println(buffer);
-  } else {
-    Serial.println("DHT22 read failed");
+    if (!isnan(temp)) {
+      JsonDocument doc;
+      doc["time"] = millis() / 1000;
+      doc["temp"] = temp;
+
+      int light = analogRead(LIGHTPIN);
+      doc["light"] = light;
+
+      char buffer[128];
+      serializeJson(doc, buffer);
+      bool published = client.publish(topic_pub, buffer);
+
+      Serial.print("Publish ");
+      Serial.print(published ? "OK " : "FAILED ");
+      Serial.print("topic=");
+      Serial.print(topic_pub);
+      Serial.print(" payload=");
+      Serial.println(buffer);
+    } else {
+      Serial.println("DHT22 read failed");
+    }
   }
-  
-  delay(2000);
 }
