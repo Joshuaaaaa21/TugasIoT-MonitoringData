@@ -80,6 +80,8 @@
   button[aria-pressed="true"]{background:var(--ink);color:#fff;border-color:var(--ink)}
   .lampu-on[aria-pressed="true"]{background:var(--on);border-color:var(--on)}
   .lampu-off[aria-pressed="true"]{background:var(--off);border-color:var(--off)}
+  .telegram{background:#0088CC;color:#fff;border-color:#0088CC}
+  .telegram:hover:not(:disabled){background:#0077B3}
 
   .note{
     max-width:1080px;margin:10px auto 0;padding:0 4px;
@@ -134,6 +136,10 @@
       <span class="name">LED</span>
       <button class="lampu-on" id="btnLedOn" aria-pressed="false">Nyalakan</button>
       <button class="lampu-off" id="btnLedOff" aria-pressed="false">Matikan</button>
+    </div>
+    <div class="group">
+      <span class="name">Notifikasi</span>
+      <button class="telegram" id="btnTelegram">Kirim notif Telegram</button>
     </div>
   </div>
 </main>
@@ -280,6 +286,19 @@ document.getElementById('btnExcel').onclick = ()=>{
 };
 document.getElementById('btnLedOn').onclick  = ()=>aturLed('1');
 document.getElementById('btnLedOff').onclick = ()=>aturLed('0');
+
+document.getElementById('btnTelegram').onclick = async ()=>{
+  const tombol = document.getElementById('btnTelegram');
+  tombol.disabled = true;
+  pesan('Mengirim notifikasi ke Telegram…');
+  try{
+    const d = await kirim('/api/telegram');
+    pesan(d.message, !d.ok);
+  }catch(e){
+    pesan('Notifikasi gagal dikirim.', true);
+  }
+  tombol.disabled = false;
+};
 
 async function aturLed(nilai){
   try{

@@ -15,6 +15,7 @@ import threading
 
 import pandas as pd
 import paho.mqtt.client as mqtt
+import requests
 from flask import Flask, jsonify, render_template, request, send_file
 
 # --- Konfigurasi MQTT
@@ -22,6 +23,13 @@ MQTT_BROKER = "broker.hivemq.com"
 MQTT_PORT = 1883
 MQTT_SENSOR_TOPIC = "kelompok01_IF_IoT/datasensor"
 MQTT_LED_TOPIC = "kelompok01_IF_IoT/led"
+
+# --- Konfigurasi Telegram
+# Buat bot lewat @BotFather di Telegram untuk dapat TOKEN.
+# Untuk CHAT_ID: chat dulu bot-nya sekali, lalu buka
+# https://api.telegram.org/bot<TOKEN>/getUpdates di browser dan cari "chat":{"id":...}
+TELEGRAM_BOT_TOKEN = "8902137622:AAHqNaDQCAwdEoFoGuekFeYWGcBvnvINARA"
+TELEGRAM_CHAT_ID = "7346607258"
 
 # --- Penyimpanan data (dipakai bersama thread MQTT dan thread web)
 lock = threading.Lock()
@@ -158,6 +166,42 @@ def api_led():
     label = "menyala" if value == "1" else "mati"
     print(f"Perintah LED ({label}) terkirim")
     return jsonify({"ok": True, "led": led_state, "message": f"LED {label}"})
+
+
+def send_telegram(pesan):
+    """Kirim satu pesan teks ke chat Telegram yang sudah dikonfigurasi."""
+    if "GANTI_DENGAN" in TELEGRAM_BOT_TOKEN or "GANTI_DENGAN" in TELEGRAM_CHAT_ID:
+        return False, "Token/Chat ID Telegram belum diisi di app.py"
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    try:
+        r = requests.post(
+            url, data={"chat_id": TELEGRAM_CHAT_ID, "text": pesan}, timeout=5
+        )
+        if r.status_code == 200 and r.json().get("ok"):
+            return True, "Notifikasi terkirim ke Telegram"
+        return False, f"Gagal kirim: {r.text}"
+    except requests.RequestException as e:
+        return False, f"Gagal kirim: {e}"
+
+
+@app.post("/api/telegram")
+def api_telegram():
+    with lock:
+        suhu_terakhir = temp_data[-1] if temp_data else None
+        cahaya_terakhir = light_data[-1] if light_data else None
+
+    if suhu_terakhir is None:
+        return jsonify({"ok": False, "message": "Belum ada data untuk dikirim"}), 400
+
+    pesan = (
+        "Sistem Monitoring:\n"
+        f"Suhu terakhir tercatat {suhu_terakhir:.1f} °C\n"
+        f"Cahaya terakhir tercatat {cahaya_terakhir} ADC"
+    )
+    ok, keterangan = send_telegram(pesan)
+    status = 200 if ok else 502
+    return jsonify({"ok": ok, "message": keterangan}), status
 
 
 @app.get("/api/export")
